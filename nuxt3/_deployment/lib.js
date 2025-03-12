@@ -380,21 +380,33 @@ async function getServicePort(isRunning) {
 /**
  * 명령어 실행 함수
  * @param {string} command - 실행할 명령어
+ * @param {Object} [options] - 실행 옵션
+ * @param {boolean} [options.rejectOnAnyError=false] - true일 경우 모든 오류에 대해 reject
  * @returns {Promise<string>} - 명령어 실행 결과
  */
-async function execCommand(command) {
+async function execCommand(command, options = {}) {
+  const rejectOnAnyError = options.rejectOnAnyError || false;
+
   return new Promise((resolve, reject) => {
     exec(command, (err, stdout, stderr) => {
-      if (err && err.code !== 1) {
-        console.log(err);
-        console.log(stderr);
-        reject(new Error(`명령어 실행 오류: ${stderr}`));
-        return;
+      if (err) {
+        if (rejectOnAnyError) {
+          console.log(err);
+          console.log(stderr);
+          reject(new Error(`명령어 실행 오류: ${stderr}`));
+          return;
+        } else if (err.code !== 1) {
+          console.log(err);
+          console.log(stderr);
+          reject(new Error(`예상치 못한 실행 오류: ${stderr}`));
+          return;
+        }
       }
       resolve(stdout);
     });
   });
 }
+
 
 /**
  * PM2에 프로세스가 등록되었는지 확인하는 함수

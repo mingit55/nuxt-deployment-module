@@ -52,7 +52,7 @@ async function buildNuxt(skipBuild) {
 
   try {
     // Nuxt 3의 빌드 명령
-    await execCommand('npm run build');
+    await execCommand('npm run build', { rejectOnAnyError: true }); // Nuxt 빌드 시 발생한 오류는 무조건 Reject
     console.log(
       colors.bold.green(
         '<Success> 메인의 Nuxt 프로젝트 빌드가 완료되었습니다.',
