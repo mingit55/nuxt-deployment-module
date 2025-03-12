@@ -12,6 +12,7 @@ export default defineEventHandler((event) => {
     ipRequestCounts.set(clientIp, {
       count: 0,
       resetAt: Date.now() + WINDOW,
+      lastRequestPath: requestPath,
     });
   }
 

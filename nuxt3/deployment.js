@@ -447,15 +447,8 @@ async function main() {
     process.argv.includes('--pass-build') || process.argv.includes('-P');
   const forceMainStop =
     process.argv.includes('--force-stop') || process.argv.includes('-F');
-  const nuxt3Mode =
-    process.argv.includes('--nuxt3') || process.argv.includes('-N');
 
   timeTracker.startAll(logSaveFlag);
-
-  // Nuxt 3 모드 로깅
-  if (nuxt3Mode) {
-    console.log(colors.bold.cyan('<Info> Nuxt 3 배포 모드로 실행합니다.'));
-  }
 
   try {
     // 1. 메인의 Nuxt 프로젝트 빌드
