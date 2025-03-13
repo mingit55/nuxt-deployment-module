@@ -38,7 +38,16 @@ async function waitForServiceReady(host, maxAttempts = 30, interval = 1000) {
         // index 페이지로 접근하여 서비스 상태 확인
         const req = http.get(`http://${host}/`, (res) => {
           // 응답 코드가 200대면 준비된 것으로 간주
-          resolve(res.statusCode >= 200 && res.statusCode < 300);
+          // 일부 300대 코드도 준비된 것으로 간주
+          resolve((res.statusCode >= 200 && res.statusCode < 300 || [
+            300, // Multiple Choice
+            301, // Moved permanently
+            302, // Found
+            303, // See Other
+            304, // Not Modified
+            307, // Temporary Redirect
+            308, // Permanent Redirect
+          ]));
 
           // 응답 데이터는 필요 없으므로 무시
           res.resume();

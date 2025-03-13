@@ -1,4 +1,4 @@
-export defualt defineNuxtConfig({
+export default defineNuxtConfig({
   vite: {
     logLevel: process.env.MODE === 'production' ? 'error' : 'info',
     build: {
