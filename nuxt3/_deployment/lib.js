@@ -13,6 +13,21 @@ function sleep(time) {
 }
 
 /**
+ * HTTP 응답 상태 코드가 서비스 준비 상태를 나타내는지 확인
+ * @param {number} statusCode - HTTP 상태 코드
+ * @returns {boolean} - 준비 상태 여부
+ */
+function isSuccessOrRedirectStatus(statusCode) {
+  // 2xx: 성공 응답
+  // 3xx: 리다이렉션 응답 (서비스가 살아있음을 의미함)
+  return (
+    (statusCode >= 200 && statusCode < 300) || // 성공 응답
+    [301, 302, 303, 307, 308].includes(statusCode) || // 리다이렉션 응답
+    statusCode === 304 // Not Modified (캐시 유효)
+  );
+}
+
+/**
  * 서비스 준비 상태를 확인하는 함수
  * @param {string} host - 확인할 호스트 주소
  * @param {number} maxAttempts - 최대 시도 횟수
@@ -37,23 +52,22 @@ async function waitForServiceReady(host, maxAttempts = 30, interval = 1000) {
       const isReady = await new Promise((resolve) => {
         // index 페이지로 접근하여 서비스 상태 확인
         const req = http.get(`http://${host}/`, (res) => {
-          // 응답 코드가 200대면 준비된 것으로 간주
-          // 일부 300대 코드도 준비된 것으로 간주
-          resolve((res.statusCode >= 200 && res.statusCode < 300 || [
-            300, // Multiple Choice
-            301, // Moved permanently
-            302, // Found
-            303, // See Other
-            304, // Not Modified
-            307, // Temporary Redirect
-            308, // Permanent Redirect
-          ]));
+          // 응답 코드 로깅
+          console.log(
+            colors.yellow(`<Info> 서비스 응답 코드: ${res.statusCode}`),
+          );
+
+          // 200대 응답 또는 리다이렉션도 서비스가 준비된 것으로 간주
+          resolve(isSuccessOrRedirectStatus(res.statusCode));
 
           // 응답 데이터는 필요 없으므로 무시
           res.resume();
         });
 
-        req.on('error', () => {
+        req.on('error', (error) => {
+          console.log(
+            colors.yellow(`<Warning> 요청 중 오류 발생: ${error.message}`),
+          );
           resolve(false);
         });
 
@@ -99,6 +113,82 @@ async function waitForServiceReady(host, maxAttempts = 30, interval = 1000) {
     ),
   );
   return false;
+}
+
+/**
+ * HTTP 요청 전송 및 응답 처리 헬퍼 함수
+ * @param {string} host - 호스트 주소 (예: localhost:3000)
+ * @param {string} path - 요청 경로 (예: /api/users)
+ * @param {number} timeout - 요청 타임아웃 (ms)
+ * @returns {Promise<Object>} - 응답 결과 객체 (statusCode, headers 등)
+ */
+function sendHttpRequest(host, path, timeout) {
+  // URL 파싱
+  let protocol = 'http:';
+  let hostname = host;
+  let port = 80;
+
+  // 프로토콜 체크 및 제거
+  if (host.startsWith('https://')) {
+    protocol = 'https:';
+    hostname = host.substring(8);
+    port = 443;
+  } else if (host.startsWith('http://')) {
+    hostname = host.substring(7);
+  }
+
+  // 호스트와 포트 분리
+  if (hostname.includes(':')) {
+    const parts = hostname.split(':');
+    hostname = parts[0];
+    port = parseInt(parts[1], 10);
+  }
+
+  const httpModule = protocol === 'https:' ? require('https') : require('http');
+
+  return new Promise((resolve, reject) => {
+    const reqOptions = {
+      hostname: hostname,
+      port: port,
+      path: path,
+      method: 'GET',
+      headers: {
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache',
+        'User-Agent': 'NuxtWarmupService/1.0',
+      },
+    };
+
+    const req = httpModule.request(reqOptions, (res) => {
+      // 응답 코드 로깅
+      console.log(colors.yellow(`<Info> ${path} 응답 코드: ${res.statusCode}`));
+
+      // 응답 데이터는 소비해야 함 (메모리 누수 방지)
+      let data = '';
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+
+      res.on('end', () => {
+        resolve({
+          statusCode: res.statusCode,
+          headers: res.headers,
+          data,
+        });
+      });
+    });
+
+    req.on('error', (error) => {
+      reject(error);
+    });
+
+    req.setTimeout(timeout, () => {
+      req.destroy();
+      reject(new Error('Request timeout'));
+    });
+
+    req.end();
+  });
 }
 
 /**
@@ -177,8 +267,8 @@ async function warmupService(host, attempts = 3, options = {}) {
         try {
           const result = await sendHttpRequest(host, path, currentTimeout);
 
-          // 성공 응답인 경우 (200-299 상태 코드)
-          if (result.statusCode >= 200 && result.statusCode < 300) {
+          // 성공 응답인 경우 (200-299 상태 코드) 또는 리다이렉션(300-399)
+          if (isSuccessOrRedirectStatus(result.statusCode)) {
             successfulPaths.add(path);
 
             // 모든 시도 완료한 경로는 제거
@@ -282,79 +372,6 @@ async function warmupService(host, attempts = 3, options = {}) {
 }
 
 /**
- * HTTP 요청 전송 및 응답 처리 헬퍼 함수
- * @param {string} host - 호스트 주소 (예: localhost:3000)
- * @param {string} path - 요청 경로 (예: /api/users)
- * @param {number} timeout - 요청 타임아웃 (ms)
- * @returns {Promise<Object>} - 응답 결과 객체 (statusCode, headers 등)
- */
-function sendHttpRequest(host, path, timeout) {
-  // URL 파싱
-  let protocol = 'http:';
-  let hostname = host;
-  let port = 80;
-
-  // 프로토콜 체크 및 제거
-  if (host.startsWith('https://')) {
-    protocol = 'https:';
-    hostname = host.substring(8);
-    port = 443;
-  } else if (host.startsWith('http://')) {
-    hostname = host.substring(7);
-  }
-
-  // 호스트와 포트 분리
-  if (hostname.includes(':')) {
-    const parts = hostname.split(':');
-    hostname = parts[0];
-    port = parseInt(parts[1], 10);
-  }
-
-  const httpModule = protocol === 'https:' ? require('https') : require('http');
-
-  return new Promise((resolve, reject) => {
-    const reqOptions = {
-      hostname: hostname,
-      port: port,
-      path: path,
-      method: 'GET',
-      headers: {
-        'Cache-Control': 'no-cache',
-        Pragma: 'no-cache',
-        'User-Agent': 'NuxtWarmupService/1.0',
-      },
-    };
-
-    const req = httpModule.request(reqOptions, (res) => {
-      // 응답 데이터는 소비해야 함 (메모리 누수 방지)
-      let data = '';
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
-
-      res.on('end', () => {
-        resolve({
-          statusCode: res.statusCode,
-          headers: res.headers,
-          data,
-        });
-      });
-    });
-
-    req.on('error', (error) => {
-      reject(error);
-    });
-
-    req.setTimeout(timeout, () => {
-      req.destroy();
-      reject(new Error('Request timeout'));
-    });
-
-    req.end();
-  });
-}
-
-/**
  * 포트 번호를 가져오는 함수
  * @param {boolean} isRunning - 운영 서버인지 여부
  * @returns {Promise<string>} - 포트 번호
@@ -416,7 +433,6 @@ async function execCommand(command, options = {}) {
   });
 }
 
-
 /**
  * PM2에 프로세스가 등록되었는지 확인하는 함수
  * @param {string} targetName - 확인할 프로세스 이름
@@ -450,6 +466,37 @@ async function verifyNuxtAppResources(host) {
     // 1. 메인 페이지 요청
     const mainPageResponse = await new Promise((resolve, reject) => {
       const req = http.get(`http://${host}/`, (res) => {
+        console.log(
+          colors.yellow(`<Info> 메인 페이지 응답 코드: ${res.statusCode}`),
+        );
+
+        // 리다이렉션 응답 처리
+        if (res.statusCode >= 300 && res.statusCode < 400) {
+          console.log(
+            colors.yellow(
+              `<Info> 메인 페이지에서 리다이렉션 발생 (${res.statusCode}): ${
+                res.headers.location || '알 수 없는 위치'
+              }`,
+            ),
+          );
+
+          // 리다이렉션 응답도 정상으로 간주하여 데이터 수집
+          let data = '';
+          res.on('data', (chunk) => {
+            data += chunk;
+          });
+          res.on('end', () => {
+            resolve({
+              statusCode: res.statusCode,
+              headers: res.headers,
+              data: data,
+              redirected: true,
+              location: res.headers.location,
+            });
+          });
+          return;
+        }
+
         let data = '';
         res.on('data', (chunk) => {
           data += chunk;
@@ -459,6 +506,7 @@ async function verifyNuxtAppResources(host) {
             statusCode: res.statusCode,
             headers: res.headers,
             data: data,
+            redirected: false,
           });
         });
       });
@@ -471,16 +519,23 @@ async function verifyNuxtAppResources(host) {
     });
 
     // 2. 메인 페이지 응답 검증
-    if (
-      mainPageResponse.statusCode < 200 ||
-      mainPageResponse.statusCode >= 300
-    ) {
+    if (!isSuccessOrRedirectStatus(mainPageResponse.statusCode)) {
       console.log(
         colors.yellow(
           `<Warning> 메인 페이지에서 비정상 상태 코드: ${mainPageResponse.statusCode}`,
         ),
       );
       return false;
+    }
+
+    // 리다이렉션된 경우에는 추가 검증 건너뛰기 (리다이렉션은 정상 동작으로 간주)
+    if (mainPageResponse.redirected) {
+      console.log(
+        colors.green(
+          `<Success> 메인 페이지가 ${mainPageResponse.statusCode} 코드로 리다이렉션됩니다. 서비스가 정상입니다.`,
+        ),
+      );
+      return true;
     }
 
     // 3. Nuxt 앱 컨테이너 확인 (Nuxt 3에서는 id="__nuxt"를 사용)
@@ -527,6 +582,28 @@ async function verifyNuxtAppResources(host) {
 
           const response = await new Promise((resolve, reject) => {
             const req = http.get(`http://${host}${fullPath}`, (res) => {
+              // 리다이렉션 응답도 정상으로 간주
+              if (res.statusCode >= 300 && res.statusCode < 400) {
+                console.log(
+                  colors.yellow(
+                    `<Info> 스크립트 리다이렉션 발생 (${
+                      res.statusCode
+                    }): ${scriptPath} -> ${
+                      res.headers.location || '알 수 없는 위치'
+                    }`,
+                  ),
+                );
+
+                resolve({
+                  statusCode: res.statusCode,
+                  headers: res.headers,
+                  data: '',
+                  path: scriptPath,
+                  redirected: true,
+                });
+                return;
+              }
+
               let data = '';
               res.on('data', (chunk) => {
                 data += chunk;
@@ -537,6 +614,7 @@ async function verifyNuxtAppResources(host) {
                   headers: res.headers,
                   data: data,
                   path: scriptPath,
+                  redirected: false,
                 });
               });
             });
@@ -549,12 +627,17 @@ async function verifyNuxtAppResources(host) {
           });
 
           // 스크립트 파일 응답 검증
-          if (response.statusCode < 200 || response.statusCode >= 300) {
+          if (!isSuccessOrRedirectStatus(response.statusCode)) {
             return {
               path: scriptPath,
               success: false,
               reason: `상태 코드: ${response.statusCode}`,
             };
+          }
+
+          // 리다이렉션된 경우는 성공으로 간주
+          if (response.redirected) {
+            return { path: scriptPath, success: true, redirected: true };
           }
 
           // 스크립트 콘텐츠 기본 검증
@@ -615,9 +698,9 @@ async function verifyNuxtAppResources(host) {
         });
       });
 
-      // 404도 허용 (디렉터리 리스팅이 비활성화된 경우)
+      // 200, 404, 3xx 모두 허용 (디렉터리 리스팅이 비활성화되거나 리다이렉션 될 수 있음)
       if (
-        staticDirResponse.statusCode !== 200 &&
+        !isSuccessOrRedirectStatus(staticDirResponse.statusCode) &&
         staticDirResponse.statusCode !== 404
       ) {
         console.log(
